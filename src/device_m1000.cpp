@@ -271,19 +271,23 @@ void M1000_Device::in_completion(libusb_transfer *t)
 	if (t->status == LIBUSB_TRANSFER_COMPLETED) {
 		// Store exceptions to rethrow them in the main thread in read()/write().
 		try {
+            DEBUG("in completion called handle_in_transfer\n");
 			handle_in_transfer(t);
 		} catch (...) {
 			e_ptr = std::current_exception();
 		}
 
 		if (!m_session->cancelled()) {
+            DEBUG("in completion called submit_in_transfer\n");
 			submit_in_transfer(t);
 		}
 	} else if (t->status != LIBUSB_TRANSFER_CANCELLED) {
+        DEBUG("in completion error\n");
 		m_session->handle_error(t->status, "M1000_Device::in_completion");
 	}
 	if (m_out_transfers.num_active == 0 && m_in_transfers.num_active == 0) {
-		m_session->completion();
+        DEBUG("in completion called completion\n");
+        m_session->completion();
 	}
 }
 
@@ -306,14 +310,19 @@ void M1000_Device::out_completion(libusb_transfer *t)
 
 	if (t->status == LIBUSB_TRANSFER_COMPLETED) {
 		// Store exceptions to rethrow them in the main thread in read()/write().
-		if (!m_session->cancelled())
-			submit_out_transfer(t);
+        if (!m_session->cancelled()){
+            DEBUG("out completion \n");
+            submit_out_transfer(t);
+        }
+
 
 	} else if (t->status != LIBUSB_TRANSFER_CANCELLED) {
+        DEBUG("out completion errror \n");
 		 m_session->handle_error(t->status, "M1000_Device::out_completion");
 	}
 	if (m_out_transfers.num_active == 0 && m_in_transfers.num_active == 0) {
-		m_session->completion();
+        DEBUG("out completion called completion\n");
+        m_session->completion();
 	}
 }
 
@@ -379,6 +388,7 @@ uint16_t M1000_Device::encode_out(unsigned channel, bool peek)
 	int v = 32768 * 4 / 5;
 
 	if (m_mode[channel] != HI_Z) {
+//        DEBUG("m_out_samples_avail on ch: %d: %d \n",channel,(int)m_out_samples_avail[channel]);
 		if (m_sample_count == 0 || m_out_samples_avail[channel] > 0) {
 			if (!std::isnan(m_next_output[channel])) {
 				val = m_next_output[channel];
@@ -406,6 +416,7 @@ uint16_t M1000_Device::encode_out(unsigned channel, bool peek)
 			m_out_samples_avail[channel]--;
 			m_previous_output[channel] = val;
 		} else {
+            DEBUG("Used last sample (0 ?) ch: %d: %d \n",channel,(int)m_out_samples_avail[channel]);
 			// When trying to read more data than has been written in
 			// noncontinuous mode use the previously written value as a
 			// fallback. This allows for filling out full packets if only
@@ -450,8 +461,9 @@ void M1000_Device::handle_out_transfer(libusb_transfer* t)
 			// fill out the packet.
 			if (m_sample_count == 0 || m_out_sampleno <= m_sample_count) {
 				bool peek = m_sample_count > 0 && m_out_sampleno == m_sample_count;
-				a = encode_out(CHAN_A, peek);
+                a = encode_out(CHAN_A, peek);
 				b = encode_out(CHAN_B, peek);
+
 			}
 
 			if (std::atof(m_fwver.c_str()) >= 2) {
@@ -502,6 +514,7 @@ int M1000_Device::submit_in_transfer(libusb_transfer* t)
 {
 	int ret;
 	if (m_sample_count == 0 || m_requested_sampleno < m_sample_count) {
+        DEBUG("submit in transfer\n");
 		ret = libusb_submit_transfer(t);
 		if (ret != 0) {
 			m_in_transfers.failed(t);
@@ -525,7 +538,7 @@ ssize_t M1000_Device::read(std::vector<std::array<float, 4>>& buf, size_t sample
 		if(m_in_samples_avail > samples){
 			int s = m_in_samples_avail-samples;
         	for(int i=0;i<s;i++){
-           		m_in_samples_q.pop(sample);
+                m_in_samples_q.pop(sample);
         	}
 			m_in_samples_avail -= s;
 		}
@@ -533,6 +546,7 @@ ssize_t M1000_Device::read(std::vector<std::array<float, 4>>& buf, size_t sample
 	
 	auto clk_start = std::chrono::high_resolution_clock::now();
 	while (remaining_samples > 0) {
+        DEBUG("read: remaining_samples: %u \n",remaining_samples);
 		// we can only grab up to the amount of samples that are available
 		if (remaining_samples > m_in_samples_avail)
 			samples = m_in_samples_avail;
@@ -540,14 +554,16 @@ ssize_t M1000_Device::read(std::vector<std::array<float, 4>>& buf, size_t sample
 			samples = remaining_samples;
 
 		// copy samples to the output buffer
+        DEBUG("before push: m_in_samples_avail: %u \n",unsigned(m_in_samples_avail));
 		for (uint32_t i = 0; i < samples; i++) {
 			m_in_samples_q.pop(sample);
 			m_in_samples_avail--;
 			buf.push_back(sample);
 		}
-
+        DEBUG("after push: m_in_samples_avail: %u\n",unsigned(m_in_samples_avail));
 		// stop acquiring samples if we've fulfilled the requested number
 		remaining_samples -= samples;
+        DEBUG("after push: remaining_samples %u \n",remaining_samples);
 		if (remaining_samples == 0)
 			break;
 
@@ -608,7 +624,7 @@ int M1000_Device::write(std::vector<float>& buf, unsigned channel, bool cyclic)
 	// Bump available sample count before it's fully queued in order to signal
 	// to the encoding threads that they can count on future data existing.
 	m_out_samples_avail[channel] += buf.size();
-
+    DEBUG("write:: m_out_samples_avail: %d \n",(int)m_out_samples_avail[channel]);
 	std::unique_lock<std::mutex> lk(m_out_samples_mtx[channel]);
 	std::condition_variable& cv = m_out_samples_cv[channel];
 	m_out_samples_buf[channel] = buf;
@@ -662,7 +678,7 @@ void M1000_Device::handle_in_transfer(libusb_transfer* t)
 {
 	float v;
 	std::array<float, 4> samples = {};
-
+    DEBUG("handle_in_transfer:before m_avail_sample: %lu \n",unsigned(m_in_samples_avail));
 	for (unsigned p = 0; p < m_packets_per_transfer; p++) {
 		uint8_t* buf = (uint8_t*) (t->buffer + p * in_packet_size);
 
@@ -697,6 +713,7 @@ void M1000_Device::handle_in_transfer(libusb_transfer* t)
 			}
 		}
 	}
+    DEBUG("handle_in_transfer:after m_avail_sample: %lu \n",unsigned(m_in_samples_avail));
 }
 
 const sl_device_info* M1000_Device::info() const
@@ -868,10 +885,12 @@ int M1000_Device::run(uint64_t samples)
 	auto start_usb_transfers = [=](M1000_Device* dev) {
 		std::unique_lock<std::mutex> lk(dev->m_state);
 		for (auto t: dev->m_in_transfers) {
+            DEBUG("kick off in transfer\n");
 			if (dev->submit_in_transfer(t)) break;
 		}
 		for (auto t: dev->m_out_transfers) {
-			if (dev->submit_out_transfer(t)) break;
+            DEBUG("kick off out transfer\n");
+            if (dev->submit_out_transfer(t)) break;
 		}
 
 #ifdef _WIN32
@@ -913,10 +932,11 @@ int M1000_Device::run(uint64_t samples)
 			stop = 0;
 start:
 			it = buf.begin();
+            DEBUG("buffer size %ld \n",std::distance(buf.begin(),buf.end()));
 			while (it != buf.end()) {
 				// push all the values that can fit at once
 				it = q.push(it, buf.end());
-
+                DEBUG("Added to output channel %d queue: %ld \n",channel, std::distance(buf.begin(),it));
 				if (stop == 2) {
 					// signaled to pause
 					cv.wait(lk_state, [&stop]{ return stop != 2; });

@@ -43,7 +43,7 @@ extern "C" int LIBUSB_CALL usb_hotplug_callback(
 				session->detached(usb_dev);
 			}
 		}
-	}
+    }
 	return 0;
 }
 
@@ -588,9 +588,10 @@ int Session::run(uint64_t samples)
 		return -EBUSY;
 	}
     m_samples = samples;
+    DEBUG("run:: m_samples %lu \n",m_samples);
 	ret = start(samples);
 	if (ret)
-		return ret;
+        return ret;
 	ret = end();
 	return ret;
 }
@@ -604,11 +605,12 @@ int Session::end()
 		cancel();
 		m_continuous = false;
 	}
-
-	// Wait up to a second for devices to finish streaming.
+    DEBUG("in end \n");
+    // Wait up to session duration + 1 seconds for devices to finish streaming.
 	std::unique_lock<std::mutex> lk(m_lock);
 	auto now = std::chrono::system_clock::now();
     uint64_t waitTime = (m_samples/m_sample_rate + 1) +1;
+    DEBUG("wait-for: %lu \n",waitTime);
     auto res = m_completion.wait_until(lk, now + std::chrono::seconds(waitTime), [&]{ return m_active_devices == 0; });
 	if (!res) {
 		DEBUG("%s: timed out waiting for completion\n", __func__);
@@ -624,6 +626,7 @@ int Session::end()
 			break;
 		}
 	}
+    DEBUG("after end\n");
 	return ret;
 }
 
@@ -692,7 +695,7 @@ void Session::completion()
 {
 	// on USB thread
 	m_active_devices -= 1;
-
+    DEBUG("completion called\n");
 	// don't lock for cancelled sessions
 	if (m_cancellation == 0)
 		std::unique_lock<std::mutex> lock(m_lock);
